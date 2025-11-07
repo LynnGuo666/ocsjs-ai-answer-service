@@ -74,6 +74,7 @@ python app.py
     "name": "AI智能题库",
     "url": "http://localhost:5000/api/search",
     "method": "get",
+    "type": "GM_xmlhttpRequest",
     "contentType": "json",
     "data": {
       "title": "${title}",
