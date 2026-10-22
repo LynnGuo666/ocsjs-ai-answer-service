@@ -200,7 +200,7 @@ gunicorn -w 4 -b 0.0.0.0:5000 app:app
 可以使用以下Dockerfile创建容器镜像：
 
 ```Dockerfile
-FROM python:3.9-slim
+FROM python:3.13-slim
 
 WORKDIR /app
 
