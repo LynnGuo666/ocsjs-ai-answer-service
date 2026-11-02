@@ -73,7 +73,7 @@ python app.py
   {
     "name": "AI智能题库",
     "url": "http://localhost:5000/api/search",
-    "method": "get",
+    "method": "post",
     "type": "GM_xmlhttpRequest",
     "contentType": "json",
     "data": {
@@ -81,10 +81,14 @@ python app.py
       "type": "${type}",
       "options": "${options}"
     },
-    "handler": "return (res)=> res.code === 1 ? [res.question, res.answer] : [res.msg, undefined]"
+    "handler": "return (res)=> res.code === 1 && res.answer ? [res.question, res.answer] : undefined"
   }
 ]
 ```
+
+> [!WARNING]
+> `type` 必须是 `GM_xmlhttpRequest`（由油猴发请求），不能用默认的 `fetch`。很多网课站点（如智慧树考试页）的 CSP 里 `connect-src` 只允许自己的域名，页面 `fetch` 到 `localhost` 会在发请求前就被浏览器拒掉，控制台表现为 `TypeError: Failed to fetch`，与本题库服务无关。
+> 使用 `GM_xmlhttpRequest` 需要在脚本头部的 `@connect` 中允许 `localhost`；原生脚本没有的话会弹授权框，或改装官方的[全域名通用版本](https://greasyfork.org/zh-CN/scripts/481438)。
 
 ## API接口说明
 
@@ -246,4 +250,25 @@ AI生成的答案可能存在以下情况：
 ### 3. 网络连接问题
 
 确保部署此服务的服务器能够访问OpenAI API（api.openai.com）。某些地区可能需要代理服务。
+
+### 4. 答题时每道题都报 `TypeError: Failed to fetch`
+
+先检查题库配置里的 `type` 是否为 `GM_xmlhttpRequest`（默认的 `fetch` 会出这个问题）。
+
+`fetch` 由页面发起，受网课站点 CSP 约束。智慧树考试页（`stuExamWeb`）的 CSP 中 `connect-src` 只列出自身域名：
+
+```
+connect-src 'self' *.zhihuishu.com c.dun.163yun.com ...
+```
+
+`localhost` 不在白名单内，浏览器会在请求发出之前就拒绝，控制台表现为：
+
+```
+Fetch API cannot load http://localhost:5000/api/search?...
+Refused to connect because it violates the document's Content Security Policy.
+```
+
+OCS 捕获到的异常就是 `TypeError: Failed to fetch`。此时请求根本没有到达本服务，所以改服务端代码、增加 CORS 响应头都无效。
+
+改用 `GM_xmlhttpRequest` 后请求由脚本管理器发起，不受页面 CSP 限制。该方式需要在脚本头部的 `@connect` 中允许 `localhost`（原生脚本会弹一次授权框），或改用官方的[全域名通用版本](https://greasyfork.org/zh-CN/scripts/481438)。
 

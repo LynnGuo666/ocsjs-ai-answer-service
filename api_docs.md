@@ -100,17 +100,20 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
     "name": "AI智能题库",
     "homepage": "https://github.com/yourusername/ai-answer-service",
     "url": "http://localhost:5000/api/search",
-    "method": "get",
+    "method": "post",
+    "type": "GM_xmlhttpRequest",
     "contentType": "json",
     "data": {
       "title": "${title}",
       "type": "${type}",
       "options": "${options}"
     },
-    "handler": "return (res)=> res.code === 1 ? [res.question, res.answer] : [res.msg, undefined]"
+    "handler": "return (res)=> res.code === 1 && res.answer ? [res.question, res.answer] : undefined"
   }
 ]
 ```
+
+> ⚠️ `type` 必须是 `GM_xmlhttpRequest`。部分网课站点（如智慧树考试页）的 CSP `connect-src` 不含 `localhost`，页面 `fetch` 会被浏览器直接拦截并报 `TypeError: Failed to fetch`；`GM_xmlhttpRequest` 由脚本管理器发请求，不受页面 CSP 限制。使用前需在脚本 `@connect` 中允许 `localhost`（或安装官方全域名通用版本）。
 
 ## 安全设置
 
