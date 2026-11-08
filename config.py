@@ -20,6 +20,10 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
     # OpenAI API Base URL，如果不设置则使用默认值
     OPENAI_API_BASE = os.getenv('OPENAI_API_BASE', 'https://api.openai.com/v1')
+    # 图片题使用的多模态模型，不设置则沿用 OPENAI_MODEL（此时 OPENAI_MODEL 需支持图片输入）
+    VISION_MODEL = os.getenv("VISION_MODEL", "")
+    # 单题最多发送给模型的图片数量
+    MAX_IMAGES = int(os.getenv("MAX_IMAGES", 10))
     
     # 日志配置
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

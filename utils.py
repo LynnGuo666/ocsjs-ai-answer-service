@@ -7,7 +7,8 @@ import json
 import time
 import os
 import hashlib
-from typing import Dict, Any, Optional, Tuple
+import re
+from typing import Dict, Any, Optional, Tuple, List
 
 class SimpleCache:
     """简单的内存缓存实现"""
@@ -22,7 +23,7 @@ class SimpleCache:
         self.cache = {}
         self.expiration = expiration_seconds
     
-    def _generate_key(self, question: str, question_type: str, options: str) -> str:
+    def _generate_key(self, question: str, question_type: str, options: str, images: Optional[List[str]] = None) -> str:
         """
         根据问题内容生成缓存键
         
@@ -36,9 +37,12 @@ class SimpleCache:
         """
         # 使用问题内容、类型和选项的组合生成哈希键
         content = f"{question}|{question_type}|{options}"
+        # 图片题：文本相同但图片不同的题目不能共用缓存
+        if images:
+            content += "|" + "|".join(hashlib.md5(img.encode('utf-8')).hexdigest() for img in images)
         return hashlib.md5(content.encode('utf-8')).hexdigest()
     
-    def get(self, question: str, question_type: str = "", options: str = "") -> Optional[str]:
+    def get(self, question: str, question_type: str = "", options: str = "", images: Optional[List[str]] = None) -> Optional[str]:
         """
         从缓存获取答案
         
@@ -50,7 +54,7 @@ class SimpleCache:
         Returns:
             Optional[str]: 缓存的答案，如果不存在或已过期则返回None
         """
-        key = self._generate_key(question, question_type, options)
+        key = self._generate_key(question, question_type, options, images)
         if key in self.cache:
             timestamp, value = self.cache[key]
             # 检查缓存是否过期
@@ -60,7 +64,7 @@ class SimpleCache:
             del self.cache[key]
         return None
     
-    def set(self, question: str, answer: str, question_type: str = "", options: str = "") -> None:
+    def set(self, question: str, answer: str, question_type: str = "", options: str = "", images: Optional[List[str]] = None) -> None:
         """
         设置缓存
         
@@ -70,7 +74,7 @@ class SimpleCache:
             question_type: 问题类型
             options: 选项内容
         """
-        key = self._generate_key(question, question_type, options)
+        key = self._generate_key(question, question_type, options, images)
         self.cache[key] = (time.time(), answer)
     
     def clear(self) -> None:
@@ -114,7 +118,56 @@ def format_answer_for_ocs(question: str, answer: str) -> Dict[str, Any]:
     }
 
 
-def parse_question_and_options(question: str, options: str, question_type: str) -> str:
+def normalize_images(raw: Any) -> List[str]:
+    """
+    规范化 OCS 图片题优化传入的 images 字段
+
+    OCS 推荐用字段解析器 {"handler": "return (env)=> env.images"} 传数组；
+    若用 "${images}" 字符串占位符，数组会被 JS 拼成逗号分隔的字符串（data URL 内部也含逗号），
+    这里按 "data:" 前缀重新切分以兼容。
+
+    Returns:
+        List[str]: data URL 或 http(s) URL 列表
+    """
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = raw.strip()
+        if raw.startswith('['):
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                pass
+    if isinstance(raw, str):
+        parts = re.split(r',(?=data:)', raw)
+    elif isinstance(raw, list):
+        parts = raw
+    else:
+        return []
+    result = []
+    for item in parts:
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if item.startswith('data:image/') or item.startswith('http://') or item.startswith('https://'):
+            result.append(item)
+    return result
+
+
+def build_user_content(prompt: str, images: Optional[List[str]] = None):
+    """
+    构建 user 消息 content：无图片时为纯文本，有图片时为 OpenAI 多模态数组
+    """
+    if not images:
+        return prompt
+    content = [{"type": "text", "text": prompt}]
+    for i, url in enumerate(images, 1):
+        content.append({"type": "text", "text": f"[图片{i}]"})
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    return content
+
+
+def parse_question_and_options(question: str, options: str, question_type: str, image_count: int = 0) -> str:
     """
     解析问题和选项，为OpenAI API构建更好的提示
     
@@ -141,6 +194,9 @@ def parse_question_and_options(question: str, options: str, question_type: str) 
     
     if options:
         prompt += f"选项:\n{options}\n"
+    
+    if image_count:
+        prompt += f"题目附带 {image_count} 张图片，文中的 [图片N] 对应第N张图片。若答案选项为图片，请回答对应的 [图片N]。\n"
     
     prompt += "请直接给出答案，不要解释。"
     return prompt

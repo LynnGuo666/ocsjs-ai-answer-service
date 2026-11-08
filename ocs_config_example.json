@@ -1,7 +1,7 @@
 [
   {
     "name": "AI智能题库",
-    "homepage": "https://github.com/LynnGuo666/ocsjs-ai-answer-service",
+    "homepage": "https://github.com/wcwq99/ocsjs-ai-answer-service",
     "url": "http://localhost:5000/api/search",
     "method": "post",
     "type": "GM_xmlhttpRequest",
@@ -9,7 +9,10 @@
     "data": {
       "title": "${title}",
       "type": "${type}",
-      "options": "${options}"
+      "options": "${options}",
+      "images": { "handler": "return (env)=> env.images || []" },
+      "suggestion_title": "${suggestion_title}",
+      "suggestion_options": "${suggestion_options}"
     },
     "handler": "return (res)=> res.code === 1 && res.answer ? [res.question, res.answer] : undefined"
   }

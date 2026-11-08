@@ -79,7 +79,10 @@ python app.py
     "data": {
       "title": "${title}",
       "type": "${type}",
-      "options": "${options}"
+      "options": "${options}",
+      "images": { "handler": "return (env)=> env.images || []" },
+      "suggestion_title": "${suggestion_title}",
+      "suggestion_options": "${suggestion_options}"
     },
     "handler": "return (res)=> res.code === 1 && res.answer ? [res.question, res.answer] : undefined"
   }
@@ -89,6 +92,13 @@ python app.py
 > [!WARNING]
 > `type` 必须是 `GM_xmlhttpRequest`（由油猴发请求），不能用默认的 `fetch`。很多网课站点（如智慧树考试页）的 CSP 里 `connect-src` 只允许自己的域名，页面 `fetch` 到 `localhost` 会在发请求前就被浏览器拒掉，控制台表现为 `TypeError: Failed to fetch`，与本题库服务无关。
 > 使用 `GM_xmlhttpRequest` 需要在脚本头部的 `@connect` 中允许 `localhost`；原生脚本没有的话会弹授权框，或改装官方的[全域名通用版本](https://greasyfork.org/zh-CN/scripts/481438)。
+
+> [!NOTE]
+> **图片题 / 公式题支持**：OCS 新版开启「图片题优化」后，会把题目和选项里的图片转成 base64，通过 `images`、`suggestion_title`、`suggestion_options` 三个字段发送（只在 POST 且配置里引用了这些字段时才发送）。如果你还在用只有 title/type/options 的旧配置，OCS 会提示「当前题库配置暂不支持图片、公式等题目处理」，换成上面的新配置即可。
+> - `images` 要用字段解析器 `{"handler": "return (env)=> env.images || []"}` 才能以数组形式提交；用 `"${images}"` 字符串占位符的话，数组会被拼成逗号分隔的字符串，服务端也做了兼容。
+> - 图片题需要支持图片输入的模型。请在 `.env` 中设置 `VISION_MODEL`（例如 `gpt-4o-mini`），不设置时沿用 `OPENAI_MODEL`。
+> - 图片由 OCS 在浏览器里转成 base64，服务端不会去下载原图链接，避免超星等站点防盗链导致的 403。
+> - 如果正确选项本身是图片，模型会回答 `[图片N]`，OCS 会自动把它还原成对应的图片并匹配选项。
 
 ## API接口说明
 
@@ -105,6 +115,9 @@ python app.py
 | title   | string | 是   | 题目内容                                                 |
 | type    | string | 否   | 题目类型 (single-单选, multiple-多选, judgement-判断, completion-填空) |
 | options | string | 否   | 选项内容，通常是A、B、C、D选项的文本                       |
+| images  | string[] | 否 | 图片题优化：base64 data URL 数组，顺序对应 `[图片1]`、`[图片2]`…（仅 POST JSON） |
+| suggestion_title | string | 否 | 图片题优化：图片 URL 已替换为 `[图片N]` 占位符的题目文本 |
+| suggestion_options | string | 否 | 图片题优化：图片 URL 已替换为 `[图片N]` 占位符的选项文本 |
 
 **成功响应**:
 

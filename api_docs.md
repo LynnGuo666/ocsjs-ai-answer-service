@@ -19,6 +19,9 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
 | title   | string | 是   | 题目内容                                                 |
 | type    | string | 否   | 题目类型 (single-单选, multiple-多选, judgement-判断, completion-填空) |
 | options | string | 否   | 选项内容，通常是A、B、C、D选项的文本                       |
+| images  | string[] | 否 | 图片题优化：base64 data URL 数组，顺序对应 `[图片1]`、`[图片2]`…（仅 POST JSON） |
+| suggestion_title | string | 否 | 图片题优化：图片 URL 已替换为 `[图片N]` 占位符的题目文本 |
+| suggestion_options | string | 否 | 图片题优化：图片 URL 已替换为 `[图片N]` 占位符的选项文本 |
 
 **成功响应**:
 
@@ -106,7 +109,10 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
     "data": {
       "title": "${title}",
       "type": "${type}",
-      "options": "${options}"
+      "options": "${options}",
+      "images": { "handler": "return (env)=> env.images || []" },
+      "suggestion_title": "${suggestion_title}",
+      "suggestion_options": "${suggestion_options}"
     },
     "handler": "return (res)=> res.code === 1 && res.answer ? [res.question, res.answer] : undefined"
   }

@@ -15,7 +15,8 @@ import json
 from datetime import datetime
 
 from config import Config
-from utils import SimpleCache, format_answer_for_ocs, parse_question_and_options, extract_answer
+from utils import (SimpleCache, format_answer_for_ocs, parse_question_and_options, extract_answer,
+                   normalize_images, build_user_content)
 
 # 配置日志
 logging.basicConfig(
@@ -46,6 +47,14 @@ client = openai.OpenAI(
 qa_records = []
 MAX_RECORDS = 100  # 最多保存100条记录
 start_time = time.time()
+
+SYSTEM_PROMPT = (
+    "你是一个专业的考试答题助手。请直接回答答案，不要解释。"
+    "选择题只回答选项的内容(如：地球)；多选题用#号分隔答案,只回答选项的内容(如中国#世界#地球)；"
+    "判断题只回答: 正确/对/true/√ 或 错误/错/false/×；填空题直接给出答案。"
+    "题目或选项中的 [图片N] 表示随消息附带的第N张图片（按顺序编号），请结合图片内容作答；"
+    "若正确选项本身是图片，直接回答该占位符（如 [图片2]）。"
+)
 
 def verify_access_token(request):
     """验证访问令牌（如果配置了的话）"""
@@ -82,6 +91,9 @@ def search():
     
     try:
         # 根据请求方法获取问题内容
+        images = []
+        suggestion_title = ''
+        suggestion_options = ''
         if request.method == 'GET':
             question = request.args.get('title', '')
             question_type = request.args.get('type', '')
@@ -90,18 +102,26 @@ def search():
             content_type = request.headers.get('Content-Type', '')
             
             if 'application/json' in content_type:
-                data = request.get_json()
-                question = data.get('title', '')
-                question_type = data.get('type', '')
-                options = data.get('options', '')
+                data = request.get_json(silent=True) or {}
+                question = data.get('title', '') or ''
+                question_type = data.get('type', '') or ''
+                options = data.get('options', '') or ''
+                # OCS 图片题优化（v2 题库配置）新增字段
+                images = normalize_images(data.get('images'))
+                suggestion_title = data.get('suggestion_title', '') or ''
+                suggestion_options = data.get('suggestion_options', '') or ''
             else:
                 # 处理表单数据
                 question = request.form.get('title', '')
                 question_type = request.form.get('type', '')
                 options = request.form.get('options', '')
         
+        if len(images) > Config.MAX_IMAGES:
+            logger.warning(f"图片数量 {len(images)} 超过上限 {Config.MAX_IMAGES}，仅保留前 {Config.MAX_IMAGES} 张")
+            images = images[:Config.MAX_IMAGES]
+        
         # 记录接收到的问题
-        logger.info(f"接收到问题: '{question[:50]}...' (类型: {question_type})")
+        logger.info(f"接收到问题: '{question[:50]}...' (类型: {question_type}, 图片: {len(images)}张)")
         
         # 如果没有提供问题，返回错误
         if not question:
@@ -113,22 +133,33 @@ def search():
         
         # 检查缓存中是否有此问题的答案
         if Config.ENABLE_CACHE:
-            cached_answer = cache.get(question, question_type, options)
+            cached_answer = cache.get(question, question_type, options, images)
             if cached_answer:
                 logger.info(f"从缓存获取答案 (耗时: {time.time() - start_time:.2f}秒)")
                 return jsonify(format_answer_for_ocs(question, cached_answer))
         
         # 构建发送给OpenAI的提示
-        prompt = parse_question_and_options(question, options, question_type)
+        # 有图片时使用 [图片N] 占位符版本的题目/选项（不含长 URL），并以多模态消息发送
+        if images:
+            prompt = parse_question_and_options(
+                suggestion_title or question,
+                suggestion_options or options,
+                question_type,
+                image_count=len(images)
+            )
+            model = Config.VISION_MODEL or Config.OPENAI_MODEL
+        else:
+            prompt = parse_question_and_options(question, options, question_type)
+            model = Config.OPENAI_MODEL
         
         # 调用OpenAI API
         response = client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
+            model=model,
             temperature=Config.TEMPERATURE,
             max_tokens=Config.MAX_TOKENS,
             messages=[
-                {"role": "system", "content": "你是一个专业的考试答题助手。请直接回答答案，不要解释。选择题只回答选项的内容(如：地球)；多选题用#号分隔答案,只回答选项的内容(如中国#世界#地球)；判断题只回答: 正确/对/true/√ 或 错误/错/false/×；填空题直接给出答案。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_content(prompt, images)}
             ]
         )
         
@@ -140,7 +171,7 @@ def search():
         
         # 保存到缓存
         if Config.ENABLE_CACHE:
-            cache.set(question, processed_answer, question_type, options)
+            cache.set(question, processed_answer, question_type, options, images)
         
         # 保存问答记录
         current_time = datetime.now()
@@ -150,6 +181,7 @@ def search():
             'question': question,
             'type': question_type,
             'options': options,
+            'images': len(images),
             'answer': processed_answer
         })
         if len(qa_records) > MAX_RECORDS:
