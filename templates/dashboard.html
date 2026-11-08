@@ -8,6 +8,29 @@
     <link href="https://cdn.jsdelivr.net/npm/datatables.net-bs5@1.13.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/datatables.net-responsive-bs5@2.5.0/css/responsive.bootstrap5.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
+
+    <script>
+    // 从 URL 的 ?api_key= 读取密钥：兜住 fetch 请求 + 站内链接
+    (function () {
+        var key = new URLSearchParams(location.search).get('api_key') || '';
+        if (!key) return;
+        window.__OCS_API_KEY = key;
+        var origFetch = window.fetch;
+        window.fetch = function (input, init) {
+            init = init || {};
+            var headers = new Headers(init.headers || {});
+            headers.set('X-API-Key', key);
+            init.headers = headers;
+            return origFetch(input, init);
+        };
+        document.addEventListener('DOMContentLoaded', function () {
+            document.querySelectorAll('a[href^="/"]').forEach(function (a) {
+                if (a.href.indexOf('api_key=') !== -1) return;
+                a.href += (a.href.indexOf('?') !== -1 ? '&' : '?') + 'api_key=' + encodeURIComponent(key);
+            });
+        });
+    })();
+    </script>
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary">

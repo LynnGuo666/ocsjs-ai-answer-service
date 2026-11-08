@@ -13,13 +13,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # 服务URL
-SERVICE_URL = os.getenv("SERVICE_URL", "http://localhost:5000")
+SERVICE_URL = os.getenv("SERVICE_URL", "http://localhost:5999")
+# 鉴权密钥（与 .env 的 API_KEYS 一致）
+API_KEY = os.getenv("API_KEYS", "")
+HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 def test_health():
     """测试健康检查接口"""
     print("测试健康检查接口...")
     try:
-        response = requests.get(f"{SERVICE_URL}/api/health")
+        response = requests.get(f"{SERVICE_URL}/api/health", headers=HEADERS)
         print(f"状态码: {response.status_code}")
         print(f"响应内容: {json.dumps(response.json(), indent=2, ensure_ascii=False)}")
         print("健康检查接口测试成功！\n")
@@ -46,7 +49,7 @@ def test_search(question, question_type=None, options=None):
         print("发送请求...")
         print(f"参数: {json.dumps(params, indent=2, ensure_ascii=False)}")
         
-        response = requests.get(f"{SERVICE_URL}/api/search", params=params)
+        response = requests.get(f"{SERVICE_URL}/api/search", params=params, headers=HEADERS)
         
         print(f"状态码: {response.status_code}")
         result = response.json()

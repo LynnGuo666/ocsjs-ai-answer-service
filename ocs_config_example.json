@@ -1,8 +1,8 @@
 [
   {
     "name": "AI智能题库",
-    "homepage": "https://github.com/LynnGuo666/ocsjs-ai-answer-service",
-    "url": "http://localhost:5000/api/search",
+    "homepage": "http://<YOUR_HOST>:5999/",
+    "url": "http://<YOUR_HOST>:5999/api/search?api_key=<YOUR_API_KEY>",
     "method": "post",
     "type": "GM_xmlhttpRequest",
     "contentType": "json",

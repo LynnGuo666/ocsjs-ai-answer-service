@@ -8,8 +8,13 @@ EduBrain AI - 智能题库系统
 from flask import Flask, request, jsonify, make_response, render_template
 from flask_cors import CORS
 import os
+import hmac
 import time
+import hashlib
+import base64
+import re
 import logging
+import httpx
 import openai
 import json
 from datetime import datetime
@@ -47,13 +52,137 @@ qa_records = []
 MAX_RECORDS = 100  # 最多保存100条记录
 start_time = time.time()
 
-def verify_access_token(request):
-    """验证访问令牌（如果配置了的话）"""
-    if Config.ACCESS_TOKEN:
-        token = request.headers.get('X-Access-Token') or request.args.get('token')
-        if not token or token != Config.ACCESS_TOKEN:
-            return False
-    return True
+# 题目图片字段别名（OCS 侧或自建客户端可任选其一传入）
+IMAGE_FIELDS = ('image', 'img', 'image_url', 'image_base64')
+# 图片归一化后的字符上限（base64 约 8MB，原图约 6MB）
+MAX_IMAGE_CHARS = 8 * 1024 * 1024
+
+
+def _first_nonempty(src, fields):
+    """从 dict / MultiDict 中按顺序取第一个非空的图片字段。"""
+    for field in fields:
+        value = src.get(field)
+        if not value:
+            continue
+        if isinstance(value, (list, tuple)):
+            items = [str(v).strip() for v in value if str(v).strip()]
+            if items:
+                return items
+            continue
+        value = str(value).strip()
+        if value:
+            return value
+    return ''
+
+
+def normalize_image(value):
+    """把图片统一成可直接交给 OpenAI 的 url 形式。
+
+    支持三种写法：
+      1. data:image/png;base64,xxx  -> 原样使用
+      2. http(s)://example.com/a.png -> 原样使用
+      3. 裸 base64                   -> 按文件头补 data:image 前缀
+    """
+    if not value:
+        return ''
+    v = value.strip()
+    if v.startswith('data:image'):
+        return v
+    if v.startswith(('http://', 'https://')):
+        return v
+    head = v[:12]
+    if head.startswith('/9j/'):
+        mime = 'image/jpeg'
+    elif head.startswith('R0lGOD'):
+        mime = 'image/gif'
+    elif head.startswith('UklGR'):
+        mime = 'image/webp'
+    else:
+        mime = 'image/png'
+    return 'data:%s;base64,%s' % (mime, v)
+
+# 题干/选项里内联出现的图片地址（OCS 常见做法：把 <img> 的 src 直接拼进标题）
+_IMAGE_URL_RE = re.compile(
+    r'https?://[^\s"\'<>()\u4e00-\u9fff]+?\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s"\'<>]*)?',
+    re.I)
+MAX_IMAGES = 6                    # 单次请求最多处理张数
+MAX_IMAGE_BYTES = 6 * 1024 * 1024  # 单张原图字节上限
+DOWNLOAD_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+               '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+
+
+def extract_image_urls(*texts):
+    """从题干/选项文本中抽取内联图片地址，按出现顺序去重。"""
+    found = []
+    for text in texts:
+        if not text:
+            continue
+        for match in _IMAGE_URL_RE.finditer(str(text)):
+            url = match.group(0)
+            if url not in found:
+                found.append(url)
+    return found
+
+
+def fetch_image_as_data_url(url):
+    """服务端下载图片并转成 data URL，失败返回空串。
+
+    部分图床（如超星 p.ananas.chaoxing.com）对不带 UA 的请求直接返回 403，
+    必须带浏览器 UA 才能取到图。
+    """
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True,
+                          headers={'User-Agent': DOWNLOAD_UA,
+                                   'Referer': 'https://mooc1.chaoxing.com/'}) as cli:
+            resp = cli.get(url)
+        if resp.status_code != 200:
+            logger.warning('图片下载失败 %s -> HTTP %s' % (url, resp.status_code))
+            return ''
+        data = resp.content
+        if not data or len(data) > MAX_IMAGE_BYTES:
+            logger.warning('图片为空或过大 %s (%d 字节)' % (url, len(data)))
+            return ''
+        ctype = (resp.headers.get('content-type') or '').split(';')[0].strip().lower()
+        if not ctype.startswith('image/'):
+            ctype = 'image/png'
+        return 'data:%s;base64,%s' % (ctype, base64.b64encode(data).decode())
+    except Exception as e:
+        logger.warning('图片下载异常 %s: %s' % (url, e))
+        return ''
+
+
+def _extract_api_key(req):
+    """从请求中提取 API Key：X-API-Key / Authorization Bearer / ?api_key=。"""
+    api_key = (req.headers.get("X-API-Key") or "").strip()
+    if not api_key:
+        authorization = (req.headers.get("Authorization") or "").strip()
+        if authorization.lower().startswith("bearer "):
+            api_key = authorization[7:].strip()
+    if not api_key:
+        api_key = (req.args.get("api_key") or "").strip()
+    return api_key
+
+
+def verify_api_key(req):
+    """校验固定 API Key，使用常量时间比较避免时序侧信道。"""
+    supplied = _extract_api_key(req)
+    return bool(supplied) and hmac.compare_digest(supplied, Config.API_KEY)
+
+
+@app.before_request
+def require_api_key():
+    """统一保护 /api/*：仅 /api/health 公开，并放行 CORS 预检。"""
+    if request.method == "OPTIONS":
+        return None
+    protected = request.path.startswith("/api/") and request.path != "/api/health"
+    if request.path == "/dashboard":
+        protected = True
+    if protected and not verify_api_key(request):
+        return jsonify({
+            "code": 0,
+            "msg": "无效的 API Key"
+        }), 401
+    return None
 
 @app.route('/api/search', methods=['GET', 'POST'])
 def search():
@@ -73,38 +202,61 @@ def search():
     """
     start_time = time.time()
     
-    # 验证访问令牌（如果配置了的话）
-    if not verify_access_token(request):
-        return jsonify({
-            'code': 0,
-            'msg': '无效的访问令牌'
-        }), 403
-    
     try:
         # 根据请求方法获取问题内容
         if request.method == 'GET':
             question = request.args.get('title', '')
             question_type = request.args.get('type', '')
             options = request.args.get('options', '')
+            raw_image = _first_nonempty(request.args, IMAGE_FIELDS)
         else:  # POST
             content_type = request.headers.get('Content-Type', '')
             
             if 'application/json' in content_type:
-                data = request.get_json()
+                data = request.get_json(silent=True) or {}
                 question = data.get('title', '')
                 question_type = data.get('type', '')
                 options = data.get('options', '')
+                raw_image = _first_nonempty(data, IMAGE_FIELDS)
             else:
                 # 处理表单数据
                 question = request.form.get('title', '')
                 question_type = request.form.get('type', '')
                 options = request.form.get('options', '')
+                raw_image = _first_nonempty(request.form, IMAGE_FIELDS)
+
+        # ===== 收集题目图片 =====
+        # 1) 显式图片字段（支持单张或多张）
+        explicit = raw_image if isinstance(raw_image, list) else ([raw_image] if raw_image else [])
+        # 2) OCS 常把图片地址直接拼在题干文本里，必须一并抽出来，
+        #    否则模型只能看到一串链接、看不到图，会返回空答案
+        inline = extract_image_urls(question, options)
+
+        images = []
+        for item in list(explicit) + inline:
+            if not item or item in images:
+                continue
+            if len(images) >= MAX_IMAGES:
+                break
+            norm = normalize_image(item)
+            # http(s) 图片统一在服务端下载成 base64，避免网关/模型抓不到
+            if norm.startswith(('http://', 'https://')):
+                fetched = fetch_image_as_data_url(norm)
+                if fetched:
+                    logger.info('已下载题目图片: %s (%d 字符)' % (norm[:80], len(fetched)))
+                    norm = fetched
+                else:
+                    logger.warning('图片下载失败，降级为直接传 URL: %s' % norm[:80])
+            if len(norm) > MAX_IMAGE_CHARS:
+                logger.warning('单张图片过大已跳过 (%d 字符)' % len(norm))
+                continue
+            images.append(norm)
         
         # 记录接收到的问题
-        logger.info(f"接收到问题: '{question[:50]}...' (类型: {question_type})")
+        logger.info(f"接收到问题: '{question[:50]}...' (类型: {question_type}, 图片: {len(images)} 张)")
         
-        # 如果没有提供问题，返回错误
-        if not question:
+        # 题干和图片都为空才算无效请求
+        if not question and not images:
             logger.warning("未提供问题内容")
             return jsonify({
                 'code': 0,
@@ -113,34 +265,51 @@ def search():
         
         # 检查缓存中是否有此问题的答案
         if Config.ENABLE_CACHE:
-            cached_answer = cache.get(question, question_type, options)
+            image_sig = hashlib.md5('|'.join(images).encode('utf-8')).hexdigest()[:16] if images else ''
+            cached_answer = cache.get(question, question_type, options, image_sig)
             if cached_answer:
                 logger.info(f"从缓存获取答案 (耗时: {time.time() - start_time:.2f}秒)")
                 return jsonify(format_answer_for_ocs(question, cached_answer))
         
         # 构建发送给OpenAI的提示
         prompt = parse_question_and_options(question, options, question_type)
+        if images:
+            prompt += "\n（题目附带 %d 张图片，请结合图片中的公式、数字和文字作答。）" % len(images)
         
+        # 有图片时构造多模态消息（text + 若干 image_url），否则保持纯文本
+        if images:
+            user_content = [{"type": "text", "text": prompt}]
+            for img in images:
+                user_content.append({"type": "image_url", "image_url": {"url": img}})
+        else:
+            user_content = prompt
+
         # 调用OpenAI API
         response = client.chat.completions.create(
             model=Config.OPENAI_MODEL,
             temperature=Config.TEMPERATURE,
             max_tokens=Config.MAX_TOKENS,
             messages=[
-                {"role": "system", "content": "你是一个专业的考试答题助手。请直接回答答案，不要解释。选择题只回答选项的内容(如：地球)；多选题用#号分隔答案,只回答选项的内容(如中国#世界#地球)；判断题只回答: 正确/对/true/√ 或 错误/错/false/×；填空题直接给出答案。"},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "你是一个专业的考试答题助手。请直接回答答案，不要解释。选择题只回答选项的内容(如：地球)；多选题用#号分隔答案,只回答选项的内容(如中国#世界#地球)；判断题只回答: 正确/对/true/√ 或 错误/错/false/×；填空题直接给出答案，若有多个空请按顺序用#分隔。"},
+                {"role": "user", "content": user_content}
             ]
         )
         
-        # 获取AI生成的答案
-        ai_answer = response.choices[0].message.content.strip()
+        # 获取AI生成的答案（模型可能因看不到图/内容超限而返回空）
+        ai_answer = (response.choices[0].message.content or '').strip()
+        if not ai_answer:
+            logger.warning('模型返回空答案（题型: %s, 图片: %d 张）' % (question_type, len(images)))
+            return jsonify({
+                'code': 0,
+                'msg': 'AI 未返回有效答案，已跳过（避免填入空值）'
+            })
         
         # 处理答案格式
         processed_answer = extract_answer(ai_answer, question_type)
         
         # 保存到缓存
         if Config.ENABLE_CACHE:
-            cache.set(question, processed_answer, question_type, options)
+            cache.set(question, processed_answer, question_type, options, image_sig)
         
         # 保存问答记录
         current_time = datetime.now()
@@ -150,7 +319,9 @@ def search():
             'question': question,
             'type': question_type,
             'options': options,
-            'answer': processed_answer
+            'answer': processed_answer,
+            'has_image': bool(images),
+            'images_count': len(images)
         })
         if len(qa_records) > MAX_RECORDS:
             qa_records.pop(0)
@@ -186,13 +357,6 @@ def health_check():
 @app.route('/api/cache/clear', methods=['POST'])
 def clear_cache():
     """清除缓存接口"""
-    # 验证访问令牌
-    if not verify_access_token(request):
-        return jsonify({
-            'success': False,
-            'message': '无效的访问令牌'
-        }), 403
-    
     if not Config.ENABLE_CACHE:
         return jsonify({
             'success': False,
@@ -208,13 +372,6 @@ def clear_cache():
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
     """获取服务统计信息"""
-    # 验证访问令牌
-    if not verify_access_token(request):
-        return jsonify({
-            'success': False,
-            'message': '无效的访问令牌'
-        }), 403
-    
     stats = {
         'version': '1.0.0',
         'uptime': time.time() - start_time,

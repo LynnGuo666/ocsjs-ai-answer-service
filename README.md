@@ -62,7 +62,7 @@ OPENAI_API_KEY=your_api_key_here
 python app.py
 ```
 
-服务将默认运行在`http://localhost:5000`
+服务将运行在 `.env` 中 `HOST`/`PORT` 指定的地址（默认 `http://localhost:5999`）
 
 ### 5. 在OCS中配置使用
 
@@ -72,7 +72,7 @@ python app.py
 [
   {
     "name": "AI智能题库",
-    "url": "http://localhost:5000/api/search",
+    "url": "http://<YOUR_HOST>:5999/api/search?api_key=<YOUR_API_KEY>",
     "method": "post",
     "type": "GM_xmlhttpRequest",
     "contentType": "json",
@@ -139,7 +139,7 @@ python app.py
   "message": "AI题库服务运行正常",
   "version": "1.0.0",
   "cache_enabled": true,
-  "model": "gpt-3.5-turbo"
+  "model": "<模型名>"
 }
 ```
 
@@ -170,7 +170,7 @@ python app.py
 {
   "version": "1.0.0",
   "uptime": 1621234567.89,
-  "model": "gpt-3.5-turbo",
+  "model": "<模型名>",
   "cache_enabled": true,
   "cache_size": 123
 }
@@ -178,16 +178,30 @@ python app.py
 
 ## 安全设置
 
-如果你想增加安全性，可以在`.env`文件中设置访问令牌：
+服务启用固定 API Key 鉴权，密钥配置在 `.env`：
 
 ```
-ACCESS_TOKEN=your_secret_token_here
+API_KEYS=your_secret_key_here
 ```
 
-设置后，所有API请求都需要包含此令牌，可以通过以下两种方式之一传递：
+除 `/api/health` 外的所有 `/api/*` 请求、以及 `/dashboard` 页面都必须携带密钥，任选一种：
 
-1. HTTP头部: `X-Access-Token: your_secret_token_here`
-2. URL参数: `?token=your_secret_token_here`
+1. HTTP 头部：`X-API-Key: your_secret_key_here`
+2. HTTP 头部：`Authorization: Bearer your_secret_key_here`
+3. URL 参数：`?api_key=your_secret_key_here`（适合无法自定义请求头的 OCS 客户端）
+
+未携带或错误时返回 HTTP 401：
+
+```json
+{"code":0,"msg":"无效的 API Key"}
+```
+
+> `.env` 是唯一配置源（端口/模型/密钥），改完需 `systemctl restart ocs`。
+> 浏览器访问可带密钥：`http://<YOUR_HOST>:5999/?api_key=<YOUR_API_KEY>`，页面内请求会自动携带。
+
+## 图片题（多模态）
+
+`/api/search` 支持 `image` 参数（`data:image/...;base64`、`http(s)://` 地址、裸 base64 均可，别名 `img`/`image_url`/`image_base64`）。题干与图片至少提供一个，仅传图片也能作答。需要模型支持视觉。
 
 ## 部署建议
 
@@ -249,7 +263,7 @@ AI生成的答案可能存在以下情况：
 
 ### 3. 网络连接问题
 
-确保部署此服务的服务器能够访问OpenAI API（api.openai.com）。某些地区可能需要代理服务。
+确保部署此服务的服务器能够访问 `.env` 中 `OPENAI_API_BASE` 指向的 API 地址，且所用模型支持视觉（图片题需要）。
 
 ### 4. 答题时每道题都报 `TypeError: Failed to fetch`
 
@@ -261,10 +275,10 @@ AI生成的答案可能存在以下情况：
 connect-src 'self' *.zhihuishu.com c.dun.163yun.com ...
 ```
 
-`localhost` 不在白名单内，浏览器会在请求发出之前就拒绝，控制台表现为：
+题库域名不在白名单内时，浏览器会在请求发出之前就拒绝，控制台表现为：
 
 ```
-Fetch API cannot load http://localhost:5000/api/search?...
+Fetch API cannot load http://<YOUR_HOST>:5999/api/search?...
 Refused to connect because it violates the document's Content Security Policy.
 ```
 
