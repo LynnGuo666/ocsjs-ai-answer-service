@@ -6,11 +6,16 @@
     "method": "post",
     "type": "GM_xmlhttpRequest",
     "contentType": "json",
+    "headers": {
+      "X-API-Key": "your-api-key"
+    },
     "data": {
       "title": "${title}",
       "type": "${type}",
       "options": "${options}",
-      "images": { "handler": "return (env)=> env.images || []" },
+      "images": {
+        "handler": "return (env)=> env.images || []"
+      },
       "suggestion_title": "${suggestion_title}",
       "suggestion_options": "${suggestion_options}"
     },

@@ -29,7 +29,13 @@ class Config:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     
     # 安全配置（可选）
+    # API_KEYS: 允许访问的 API Key，多个用英文逗号分隔；ACCESS_TOKEN 为旧配置名，仍然兼容
     ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", None)
+    API_KEYS = [
+        k.strip()
+        for k in (os.getenv("API_KEYS", "") + "," + (ACCESS_TOKEN or "")).split(",")
+        if k.strip()
+    ]
     
     # 响应配置
     MAX_TOKENS = int(os.getenv("MAX_TOKENS", 500))

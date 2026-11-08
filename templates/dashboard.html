@@ -154,8 +154,11 @@
 
     function clearCache() {
         if (confirm('确定要清除所有缓存吗？')) {
+            // 沿用打开仪表盘时 URL 中的 ?key=
+            const key = new URLSearchParams(location.search).get('key') || new URLSearchParams(location.search).get('token') || '';
             fetch('/api/cache/clear', {
                 method: 'POST',
+                headers: key ? { 'X-API-Key': key } : {}
             })
             .then(response => response.json())
             .then(data => {

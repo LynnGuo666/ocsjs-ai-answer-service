@@ -106,6 +106,9 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
     "method": "post",
     "type": "GM_xmlhttpRequest",
     "contentType": "json",
+    "headers": {
+      "X-API-Key": "your-api-key"
+    },
     "data": {
       "title": "${title}",
       "type": "${type}",
@@ -123,16 +126,33 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
 
 ## 安全设置
 
-如果你想增加安全性，可以在`.env`文件中设置访问令牌：
+**服务对外部署时强烈建议开启 API Key 鉴权**，否则任何人都能调用你的接口、消耗你的 OpenAI 额度。在 `.env` 中设置：
 
 ```
-ACCESS_TOKEN=your_secret_token_here
+# 多个 Key 用英文逗号分隔，方便分给不同的人并单独作废
+API_KEYS=sk-ocs-xxxxxxxx,sk-ocs-yyyyyyyy
 ```
 
-设置后，所有API请求都需要包含此令牌，可以通过以下两种方式之一传递：
+可以用 `python -c "import secrets;print('sk-ocs-'+secrets.token_urlsafe(24))"` 生成随机 Key。旧配置 `ACCESS_TOKEN` 仍然有效，会和 `API_KEYS` 合并使用。
 
-1. HTTP头部: `X-Access-Token: your_secret_token_here`
-2. URL参数: `?token=your_secret_token_here`
+开启后，`/api/search`、`/api/stats`、`/api/cache/clear`、`/dashboard` 都需要带 Key，`/`、`/docs`、`/api/health` 不需要。Key 可以用下面任一方式传递：
+
+1. `X-API-Key: <key>`（推荐，OCS 配置里写在 `headers`）
+2. `Authorization: Bearer <key>`
+3. `X-Access-Token: <key>`（旧版兼容）
+4. URL 参数 `?key=<key>` 或 `?token=<key>`（仪表盘用：`/dashboard?key=<key>`）
+
+Key 错误或缺失时返回 HTTP 401，响应体为 `{"code": 0, "msg": "无效或缺失的 API Key"}`。
+
+OCS 配置中加上 `headers` 即可：
+
+```json
+"headers": {
+  "X-API-Key": "sk-ocs-xxxxxxxx"
+},
+```
+
+> URL 参数里的 Key 可能出现在浏览器历史和代理日志中，OCS 请优先用请求头传递；公网部署请配合 HTTPS。
 
 ## 注意事项
 

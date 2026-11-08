@@ -12,6 +12,8 @@ import time
 import logging
 import openai
 import json
+import hmac
+from functools import wraps
 from datetime import datetime
 
 from config import Config
@@ -56,15 +58,60 @@ SYSTEM_PROMPT = (
     "若正确选项本身是图片，直接回答该占位符（如 [图片2]）。"
 )
 
-def verify_access_token(request):
-    """验证访问令牌（如果配置了的话）"""
-    if Config.ACCESS_TOKEN:
-        token = request.headers.get('X-Access-Token') or request.args.get('token')
-        if not token or token != Config.ACCESS_TOKEN:
-            return False
-    return True
+def get_request_api_key(req):
+    """
+    从请求中取出 API Key，支持以下方式（按优先级）：
+    1. Authorization: Bearer <key>
+    2. X-API-Key: <key>
+    3. X-Access-Token: <key>（旧版兼容）
+    4. URL 参数 ?key=<key> 或 ?token=<key>
+    """
+    auth = req.headers.get('Authorization', '')
+    if auth.lower().startswith('bearer '):
+        return auth[7:].strip()
+    return (req.headers.get('X-API-Key')
+            or req.headers.get('X-Access-Token')
+            or req.args.get('key')
+            or req.args.get('token')
+            or '').strip()
+
+def verify_access_token(req):
+    """验证 API Key；未配置 API_KEYS / ACCESS_TOKEN 时不鉴权"""
+    if not Config.API_KEYS:
+        return True
+    key = get_request_api_key(req)
+    if not key:
+        return False
+    # 使用常量时间比较，防止时序攻击
+    return any(hmac.compare_digest(key.encode('utf-8'), k.encode('utf-8')) for k in Config.API_KEYS)
+
+def require_api_key(fmt='ocs'):
+    """
+    鉴权装饰器
+    fmt: 'ocs' 返回 {'code': 0, 'msg': ...}；'api' 返回 {'success': False, 'message': ...}；'html' 返回纯文本
+    """
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            if verify_access_token(request):
+                return f(*args, **kwargs)
+            logger.warning(f"鉴权失败: {request.method} {request.path} 来自 {request.remote_addr}")
+            msg = '无效或缺失的 API Key'
+            if fmt == 'ocs':
+                return jsonify({'code': 0, 'msg': msg}), 401
+            if fmt == 'api':
+                return jsonify({'success': False, 'message': msg}), 401
+            return make_response(msg + '，请在地址后加上 ?key=你的APIKey', 401)
+        return wrapper
+    return decorator
+
+if Config.API_KEYS:
+    logger.info(f"API Key 鉴权已启用（{len(Config.API_KEYS)} 个 Key）")
+else:
+    logger.warning("未配置 API_KEYS，所有接口均可匿名访问。对外部署时请在 .env 中设置 API_KEYS")
 
 @app.route('/api/search', methods=['GET', 'POST'])
+@require_api_key('ocs')
 def search():
     """
     处理OCS发送的搜索请求，使用OpenAI API生成答案
@@ -81,13 +128,6 @@ def search():
         失败: {'code': 0, 'msg': '错误信息'}
     """
     start_time = time.time()
-    
-    # 验证访问令牌（如果配置了的话）
-    if not verify_access_token(request):
-        return jsonify({
-            'code': 0,
-            'msg': '无效的访问令牌'
-        }), 403
     
     try:
         # 根据请求方法获取问题内容
@@ -212,19 +252,14 @@ def health_check():
         'message': 'AI题库服务运行正常',
         'version': '1.0.0',
         'cache_enabled': Config.ENABLE_CACHE,
+        'auth_enabled': bool(Config.API_KEYS),
         'model': Config.OPENAI_MODEL
     })
 
 @app.route('/api/cache/clear', methods=['POST'])
+@require_api_key('api')
 def clear_cache():
     """清除缓存接口"""
-    # 验证访问令牌
-    if not verify_access_token(request):
-        return jsonify({
-            'success': False,
-            'message': '无效的访问令牌'
-        }), 403
-    
     if not Config.ENABLE_CACHE:
         return jsonify({
             'success': False,
@@ -238,15 +273,9 @@ def clear_cache():
     })
 
 @app.route('/api/stats', methods=['GET'])
+@require_api_key('api')
 def get_stats():
     """获取服务统计信息"""
-    # 验证访问令牌
-    if not verify_access_token(request):
-        return jsonify({
-            'success': False,
-            'message': '无效的访问令牌'
-        }), 403
-    
     stats = {
         'version': '1.0.0',
         'uptime': time.time() - start_time,
@@ -259,6 +288,7 @@ def get_stats():
     return jsonify(stats)
 
 @app.route('/dashboard', methods=['GET'])
+@require_api_key('html')
 def dashboard():
     """仪表盘 - 显示问答记录和系统状态"""
     uptime_seconds = time.time() - start_time

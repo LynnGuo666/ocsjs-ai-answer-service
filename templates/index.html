@@ -36,6 +36,11 @@
                 <div class="card shadow-sm">
                     <div class="card-body">
                         <div class="form-group mb-4">
+                            <label class="form-label" for="api-key">API Key（服务端未开启鉴权可留空）</label>
+                            <input type="password" class="form-control" id="api-key" placeholder="与 .env 中 API_KEYS 一致" autocomplete="off">
+                        </div>
+
+                        <div class="form-group mb-4">
                             <label class="form-label" for="question">问题内容</label>
                             <textarea class="form-control" id="question" rows="3" placeholder="请输入问题内容"></textarea>
                         </div>
@@ -92,10 +97,16 @@
     "method": "post",
     "type": "GM_xmlhttpRequest",
     "contentType": "json",
+    "headers": {
+      "X-API-Key": "你的APIKey"
+    },
     "data": {
       "title": "${title}",
       "type": "${type}",
-      "options": "${options}"
+      "options": "${options}",
+      "images": { "handler": "return (env)=> env.images || []" },
+      "suggestion_title": "${suggestion_title}",
+      "suggestion_options": "${suggestion_options}"
     },
     "handler": "return (res)=> res.code === 1 && res.answer ? [res.question, res.answer] : undefined"
   }
@@ -104,6 +115,11 @@
     </div>
 
     <script>
+        try {
+            const savedKey = localStorage.getItem('ocs_ai_api_key');
+            if (savedKey) document.getElementById('api-key').value = savedKey;
+        } catch (e) {}
+
         document.getElementById('search-btn').addEventListener('click', async function() {
             const question = document.getElementById('question').value.trim();
             const questionType = document.getElementById('question-type').value;
@@ -119,7 +135,11 @@
             document.getElementById('result').style.display = 'none';
             
             try {
+                const apiKey = document.getElementById('api-key').value.trim();
+                try { localStorage.setItem('ocs_ai_api_key', apiKey); } catch (e) {}
                 const response = await axios.get('/api/search', {
+                    headers: apiKey ? { 'X-API-Key': apiKey } : {},
+                    validateStatus: () => true,
                     params: {
                         title: question,
                         type: questionType,
