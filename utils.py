@@ -22,7 +22,8 @@ class SimpleCache:
         self.cache = {}
         self.expiration = expiration_seconds
     
-    def _generate_key(self, question: str, question_type: str, options: str) -> str:
+    def _generate_key(self, question: str, question_type: str, options: str,
+                      extra: str = "") -> str:
         """
         根据问题内容生成缓存键
         
@@ -30,15 +31,17 @@ class SimpleCache:
             question: 问题内容
             question_type: 问题类型
             options: 选项内容
+            extra: 额外指纹（如题目图片的哈希），用于区分题干相同但图片不同的题
             
         Returns:
             str: 缓存键
         """
-        # 使用问题内容、类型和选项的组合生成哈希键
-        content = f"{question}|{question_type}|{options}"
+        # 使用问题内容、类型、选项和额外指纹的组合生成哈希键
+        content = f"{question}|{question_type}|{options}|{extra}"
         return hashlib.md5(content.encode('utf-8')).hexdigest()
     
-    def get(self, question: str, question_type: str = "", options: str = "") -> Optional[str]:
+    def get(self, question: str, question_type: str = "", options: str = "",
+            extra: str = "") -> Optional[str]:
         """
         从缓存获取答案
         
@@ -50,7 +53,7 @@ class SimpleCache:
         Returns:
             Optional[str]: 缓存的答案，如果不存在或已过期则返回None
         """
-        key = self._generate_key(question, question_type, options)
+        key = self._generate_key(question, question_type, options, extra)
         if key in self.cache:
             timestamp, value = self.cache[key]
             # 检查缓存是否过期
@@ -60,7 +63,8 @@ class SimpleCache:
             del self.cache[key]
         return None
     
-    def set(self, question: str, answer: str, question_type: str = "", options: str = "") -> None:
+    def set(self, question: str, answer: str, question_type: str = "", options: str = "",
+            extra: str = "") -> None:
         """
         设置缓存
         
@@ -70,7 +74,7 @@ class SimpleCache:
             question_type: 问题类型
             options: 选项内容
         """
-        key = self._generate_key(question, question_type, options)
+        key = self._generate_key(question, question_type, options, extra)
         self.cache[key] = (time.time(), answer)
     
     def clear(self) -> None:

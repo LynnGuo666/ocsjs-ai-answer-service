@@ -16,9 +16,13 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
 
 | 参数名   | 类型   | 必填 | 说明                                                     |
 |---------|--------|------|----------------------------------------------------------|
-| title   | string | 是   | 题目内容                                                 |
+| title   | string | 否   | 题目文字内容（与 `image` 至少提供一个）                    |
 | type    | string | 否   | 题目类型 (single-单选, multiple-多选, judgement-判断, completion-填空) |
 | options | string | 否   | 选项内容，通常是A、B、C、D选项的文本                       |
+| image   | string | 否   | 题目图片：`data:image/png;base64,...`、`http(s)://` 地址、或裸 base64。别名 `images` / `img` / `image_url` / `image_base64` |
+| images  | array  | 否   | 多张图片（可用 `{"handler": "return (env)=> env.images"}` 传数组，也兼容 `"${images}"` 拼成的逗号字符串） |
+| suggestion_title | string | 否 | OCS 提供的 OCR 后题干文本，有则优先于 `title` |
+| suggestion_options | string | 否 | OCS 提供的 OCR 后选项文本，有则优先于 `options` |
 
 **成功响应**:
 
@@ -38,6 +42,25 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
   "msg": "错误信息"
 }
 ```
+
+### 图片题（多模态）
+
+题目是截图／图片时，把图片通过 `image` 参数传入，或**让图片地址留在题干里**，服务都会自动处理：
+
+```bash
+curl -X POST http://localhost:5000/api/search \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"根据图片选择正确答案","type":"single","options":"A. 选项1\nB. 选项2","image":"<base64 或图片URL>"}'
+```
+
+- 题干与图片至少给一个，**只传 `image` 也能作答**
+- **题干里内联的图片地址会自动识别并下载**（OCS 常把 `<img>` 的 src 直接拼进标题），无需额外配置
+- 图片在服务端带浏览器 UA 下载后转 base64，单张上限 6MB，单次最多 `MAX_IMAGES` 张（默认 10）
+- 缓存键包含图片指纹，同题干不同图片不会串答案
+- 依赖模型具备视觉能力，纯文本模型会报错或返回空答案
+
+> 注意：推理模型可能把 `max_tokens` 全部消耗在 reasoning 上导致 `content` 为空。
+> 服务在空答案时会自动抬高上限重试一次；建议把 `MAX_TOKENS` 设为 16000 左右。
 
 ### 健康检查接口
 
