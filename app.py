@@ -12,6 +12,10 @@ import time
 import logging
 import openai
 import json
+import base64
+import re
+import hashlib
+import httpx
 from datetime import datetime
 
 from config import Config
@@ -46,6 +50,128 @@ client = openai.OpenAI(
 qa_records = []
 MAX_RECORDS = 100  # 最多保存100条记录
 start_time = time.time()
+
+# 题目图片字段别名（任选其一传入即可）
+IMAGE_FIELDS = ('image', 'images', 'img', 'image_url', 'image_base64')
+# 图片归一化后的字符上限（base64 约 8MB，原图约 6MB）
+MAX_IMAGE_CHARS = 8 * 1024 * 1024
+MAX_IMAGE_BYTES = 6 * 1024 * 1024
+MAX_IMAGES = int(os.getenv('MAX_IMAGES', '10'))
+# 题干/选项里内联出现的图片地址（OCS 常见做法：把 <img> 的 src 直接拼进标题）
+_IMAGE_URL_RE = re.compile(
+    r'https?://[^\s"\'<>()\u4e00-\u9fff]+?\.(?:png|jpe?g|gif|webp|bmp)(?:\?[^\s"\'<>]*)?',
+    re.I)
+DOWNLOAD_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+               '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+
+
+def _first_nonempty(src, fields):
+    """从 dict / MultiDict 中按顺序取第一个非空的图片字段。"""
+    for field in fields:
+        value = src.get(field)
+        if not value:
+            continue
+        if isinstance(value, (list, tuple)):
+            items = [str(v).strip() for v in value if str(v).strip()]
+            if items:
+                return items
+            continue
+        value = str(value).strip()
+        if value:
+            return value
+    return ''
+
+
+def split_image_items(raw):
+    """把请求里的图片字段拆成列表。
+
+    兼容三种来源：
+      1. 数组（OCS 字段解析器 {"handler": "return (env)=> env.images"}）
+      2. JSON 字符串形式的数组
+      3. "${images}" 占位符被拼成的字符串 —— 数组用逗号连接，
+         而 data URL 内部本身含逗号，因此按 ",data:" 边界切分
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    text = str(raw).strip()
+    if not text:
+        return []
+    if text.startswith('['):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()]
+        except ValueError:
+            pass
+    parts = re.split(r',(?=data:[A-Za-z]+/)', text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def extract_image_urls(*texts):
+    """从题干/选项文本中抽取内联图片地址，按出现顺序去重。"""
+    found = []
+    for text in texts:
+        if not text:
+            continue
+        for match in _IMAGE_URL_RE.finditer(str(text)):
+            url = match.group(0)
+            if url not in found:
+                found.append(url)
+    return found
+
+
+def normalize_image(value):
+    """把图片统一成可直接交给 OpenAI 的 url 形式。
+
+    支持：data:image/...;base64,xxx（原样）、http(s)://（原样）、
+    裸 base64（按文件头补 data:image 前缀）。
+    """
+    if not value:
+        return ''
+    v = value.strip()
+    if v.startswith('data:image'):
+        return v
+    if v.startswith(('http://', 'https://')):
+        return v
+    head = v[:12]
+    if head.startswith('/9j/'):
+        mime = 'image/jpeg'
+    elif head.startswith('R0lGOD'):
+        mime = 'image/gif'
+    elif head.startswith('UklGR'):
+        mime = 'image/webp'
+    else:
+        mime = 'image/png'
+    return 'data:%s;base64,%s' % (mime, v)
+
+
+def fetch_image_as_data_url(url):
+    """服务端下载图片并转成 data URL，失败返回空串。
+
+    部分图床（如超星 p.ananas.chaoxing.com）对不带 UA 的请求返回 403，
+    且会 301 跳转，因此需要带浏览器 UA 并跟随重定向。
+    """
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True,
+                          headers={'User-Agent': DOWNLOAD_UA,
+                                   'Referer': 'https://mooc1.chaoxing.com/'}) as cli:
+            resp = cli.get(url)
+        if resp.status_code != 200:
+            logger.warning('图片下载失败 %s -> HTTP %s' % (url, resp.status_code))
+            return ''
+        data = resp.content
+        if not data or len(data) > MAX_IMAGE_BYTES:
+            logger.warning('图片为空或过大 %s (%d 字节)' % (url, len(data)))
+            return ''
+        ctype = (resp.headers.get('content-type') or '').split(';')[0].strip().lower()
+        if not ctype.startswith('image/'):
+            ctype = 'image/png'
+        return 'data:%s;base64,%s' % (ctype, base64.b64encode(data).decode())
+    except Exception as e:
+        logger.warning('图片下载异常 %s: %s' % (url, e))
+        return ''
 
 def verify_access_token(request):
     """验证访问令牌（如果配置了的话）"""
@@ -99,48 +225,121 @@ def search():
                 question = request.form.get('title', '')
                 question_type = request.form.get('type', '')
                 options = request.form.get('options', '')
-        
+        # ===== 图片与 OCR 建议字段 =====
+        if request.method == 'GET':
+            _src = request.args
+        else:
+            _src = (request.get_json(silent=True)
+                    if 'application/json' in request.headers.get('Content-Type', '')
+                    else request.form) or {}
+        raw_image = _first_nonempty(_src, IMAGE_FIELDS)
+        suggestion_title = str(_src.get('suggestion_title') or '').strip()
+        suggestion_options = str(_src.get('suggestion_options') or '').strip()
+
+        # 收集图片：显式字段 + 题干/选项里内联的图片地址
+        images = []
+        for item in split_image_items(raw_image) + extract_image_urls(
+                question, options, suggestion_title, suggestion_options):
+            if not item or item in images:
+                continue
+            if len(images) >= MAX_IMAGES:
+                break
+            norm = normalize_image(item)
+            # http(s) 图片在服务端下载成 base64，避免网关/模型抓不到
+            if norm.startswith(('http://', 'https://')):
+                fetched = fetch_image_as_data_url(norm)
+                if fetched:
+                    logger.info('已下载题目图片: %s (%d 字符)' % (norm[:80], len(fetched)))
+                    norm = fetched
+                else:
+                    logger.warning('图片下载失败，降级为直接传 URL: %s' % norm[:80])
+            if len(norm) > MAX_IMAGE_CHARS:
+                logger.warning('单张图片过大已跳过 (%d 字符)' % len(norm))
+                continue
+            images.append(norm)
+
         # 记录接收到的问题
-        logger.info(f"接收到问题: '{question[:50]}...' (类型: {question_type})")
+        logger.info(f"接收到问题: '{question[:50]}...' (类型: {question_type}, 图片: {len(images)} 张)")
         
-        # 如果没有提供问题，返回错误
-        if not question:
+        # 题干（含 OCR 建议文本）和图片都为空才算无效请求
+        if not question and not suggestion_title and not images:
             logger.warning("未提供问题内容")
             return jsonify({
                 'code': 0,
                 'msg': '未提供问题内容'
             })
         
+        # 缓存键包含图片指纹，避免「同题干不同图片」共用缓存
+        image_sig = hashlib.md5('|'.join(images).encode('utf-8')).hexdigest()[:16] if images else ''
+        key_question = suggestion_title or question
+        key_options = suggestion_options or options
+
         # 检查缓存中是否有此问题的答案
         if Config.ENABLE_CACHE:
-            cached_answer = cache.get(question, question_type, options)
+            cached_answer = cache.get(key_question, question_type, key_options, image_sig)
             if cached_answer:
                 logger.info(f"从缓存获取答案 (耗时: {time.time() - start_time:.2f}秒)")
                 return jsonify(format_answer_for_ocs(question, cached_answer))
         
-        # 构建发送给OpenAI的提示
-        prompt = parse_question_and_options(question, options, question_type)
+        # 构建发送给OpenAI的提示（suggestion_* 为 OCS 提供的 OCR 文本，优先使用）
+        prompt = parse_question_and_options(suggestion_title or question,
+                                           suggestion_options or options,
+                                           question_type)
+        if images:
+            prompt += "\n（题目附带 %d 张图片，请结合图片中的公式、数字和文字作答。）" % len(images)
         
-        # 调用OpenAI API
-        response = client.chat.completions.create(
-            model=Config.OPENAI_MODEL,
-            temperature=Config.TEMPERATURE,
-            max_tokens=Config.MAX_TOKENS,
-            messages=[
-                {"role": "system", "content": "你是一个专业的考试答题助手。请直接回答答案，不要解释。选择题只回答选项的内容(如：地球)；多选题用#号分隔答案,只回答选项的内容(如中国#世界#地球)；判断题只回答: 正确/对/true/√ 或 错误/错/false/×；填空题直接给出答案。"},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        
-        # 获取AI生成的答案
-        ai_answer = response.choices[0].message.content.strip()
+        # 有图片时构造多模态消息（text + 若干 image_url），否则保持纯文本
+        if images:
+            user_content = [{"type": "text", "text": prompt}]
+            for img in images:
+                user_content.append({"type": "image_url", "image_url": {"url": img}})
+        else:
+            user_content = prompt
+
+        messages = [
+            {"role": "system", "content": "你是一个专业的考试答题助手。请直接回答答案，不要解释。选择题只回答选项的内容(如：地球)；多选题用#号分隔答案,只回答选项的内容(如中国#世界#地球)；判断题只回答: 正确/对/true/√ 或 错误/错/false/×；填空题直接给出答案，若有多个空请按顺序用#分隔。"},
+            {"role": "user", "content": user_content}
+        ]
+
+        # 推理模型有时把 max_tokens 全花在 reasoning_content 上、
+        # finish_reason=length 且 content 为空。空答案时抬高上限重试一次。
+        ai_answer = ''
+        finish_reason = ''
+        token_limits = [Config.MAX_TOKENS]
+        if Config.MAX_TOKENS < 32000:
+            token_limits.append(min(Config.MAX_TOKENS * 2, 32000))
+
+        for attempt, limit in enumerate(token_limits, 1):
+            response = client.chat.completions.create(
+                model=Config.OPENAI_MODEL,
+                temperature=Config.TEMPERATURE,
+                max_tokens=limit,
+                messages=messages
+            )
+            choice = response.choices[0]
+            finish_reason = getattr(choice, 'finish_reason', '') or ''
+            ai_answer = (choice.message.content or '').strip()
+            if ai_answer:
+                if attempt > 1:
+                    logger.info('重试成功（第 %d 次，max_tokens=%d）' % (attempt, limit))
+                break
+            logger.warning('第 %d/%d 次调用未拿到答案 (finish_reason=%s, max_tokens=%d)'
+                           % (attempt, len(token_limits), finish_reason, limit))
+
+        if not ai_answer:
+            logger.warning('模型返回空答案（题型: %s, 图片: %d 张, finish_reason=%s）'
+                           % (question_type, len(images), finish_reason))
+            return jsonify({
+                'code': 0,
+                'msg': 'AI 未返回有效答案（可能思考超限），已跳过避免填入空值'
+            })
         
         # 处理答案格式
         processed_answer = extract_answer(ai_answer, question_type)
         
         # 保存到缓存
         if Config.ENABLE_CACHE:
-            cache.set(question, processed_answer, question_type, options)
+            cache.set(key_question, processed_answer, question_type, key_options, image_sig)
         
         # 保存问答记录
         current_time = datetime.now()
@@ -150,7 +349,9 @@ def search():
             'question': question,
             'type': question_type,
             'options': options,
-            'answer': processed_answer
+            'answer': processed_answer,
+            'has_image': bool(images),
+            'images_count': len(images)
         })
         if len(qa_records) > MAX_RECORDS:
             qa_records.pop(0)
