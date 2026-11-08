@@ -21,6 +21,9 @@ class Config:
     # OpenAI API Base URL，如果不设置则使用默认值
     OPENAI_API_BASE = os.getenv('OPENAI_API_BASE', '')
     
+    # 图片配置：单次请求最多处理张数
+    MAX_IMAGES = int(os.getenv("MAX_IMAGES", "10"))
+
     # 日志配置
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     

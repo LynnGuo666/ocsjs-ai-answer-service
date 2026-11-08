@@ -201,7 +201,9 @@ API_KEYS=your_secret_key_here
 
 ## 图片题（多模态）
 
-`/api/search` 支持 `image` 参数（`data:image/...;base64`、`http(s)://` 地址、裸 base64 均可，别名 `img`/`image_url`/`image_base64`）。题干与图片至少提供一个，仅传图片也能作答。需要模型支持视觉。
+`/api/search` 支持 `image` / `images` 参数（`data:image/...;base64`、`http(s)://` 地址、裸 base64 均可）。**题干里内联的图片 URL 会自动识别并下载**，无需额外配置。题干与图片至少提供一个，仅传图片也能作答。需要模型支持视觉。
+
+> 推理模型（如 deepseek-v4.1-flash）可能把 token 全花在 reasoning 上导致空答案，请把 `.env` 的 `MAX_TOKENS` 设为 16000 左右；服务在空答案时会自动抬高上限重试一次。
 
 ## 部署建议
 

@@ -19,7 +19,10 @@ AI题库服务是一个基于OpenAI API的问题解答服务，专为[OCS (Onlin
 | title   | string | 否   | 题目文字内容（与 `image` 至少提供一个）                    |
 | type    | string | 否   | 题目类型 (single-单选, multiple-多选, judgement-判断, completion-填空) |
 | options | string | 否   | 选项内容，通常是A、B、C、D选项的文本                       |
-| image   | string | 否   | 题目图片：`data:image/png;base64,...`、`http(s)://` 地址、或裸 base64 均可。别名 `img` / `image_url` / `image_base64` 等价 |
+| image   | string | 否   | 题目图片：`data:image/png;base64,...`、`http(s)://` 地址、或裸 base64 均可。别名 `images` / `img` / `image_url` / `image_base64` 等价 |
+| images  | array  | 否   | 多张图片（OCS 可用 `{"handler": "return (env)=> env.images"}` 传数组，也兼容 `"${images}"` 拼成的逗号字符串） |
+| suggestion_title | string | 否 | OCS 提供的 OCR 后题干文本，有则优先于 `title` |
+| suggestion_options | string | 否 | OCS 提供的 OCR 后选项文本，有则优先于 `options` |
 
 **成功响应**:
 
@@ -52,6 +55,8 @@ curl -X POST http://<YOUR_HOST>:5999/api/search \
 ```
 
 - 题干与图片至少给一个，**只传 `image` 也能作答**
+- **题干里内联的图片地址会自动识别并下载**（OCS 常把 `<img>` 的 src 直接拼进标题），无需额外配置
+- 图片在服务端带浏览器 UA 下载后转 base64，单张上限 6MB，单次最多 `MAX_IMAGES` 张（默认 10）
 - 图片过大（归一化后超过 8MB）返回 `code:0` 并提示压缩
 - 缓存键包含图片指纹，同题干不同图片不会串答案
 - 依赖模型具备视觉能力，纯文本模型会报错或返回空答案
